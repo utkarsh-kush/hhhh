@@ -1,7 +1,5 @@
-from flask import Flask
-import threading
+from flask import Flask, request
 import os
-import time
 import sys
 import json
 import base64
@@ -12,6 +10,7 @@ import requests
 import pikepdf
 import logging
 import hashlib
+import time
 from typing import Tuple, Optional
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
@@ -85,16 +84,6 @@ _RETRY_CTR = "shnifz/vMiG"
 # UTILITY FUNCTIONS
 # ============================================================
 
-def _fmt_time():
-    from datetime import datetime
-    return datetime.now().strftime("%H:%M:%S")
-
-def _clean_temp():
-    import glob
-    for f in glob.glob("captcha*.png"):
-        try: os.remove(f)
-        except: pass
-
 def _validate_number(num: str, length: int = 10) -> bool:
     return num.isdigit() and len(num) == length
 
@@ -143,58 +132,35 @@ def _get_credit_text() -> str:
 # ============================================================
 
 def _get_captcha(session: requests.Session) -> Tuple[Optional[bytes], Optional[str]]:
-    """Generate captcha image from UIDAI"""
     try:
         payload = {
             "captchaLength": "6",
             "captchaType": "2",
             "audioCaptchaRequired": True
         }
-        r = session.post(
-            _EP2,
-            headers=_H,
-            json=payload,
-            timeout=15
-        )
+        r = session.post(_EP2, headers=_H, json=payload, timeout=15)
         logger.info(f"Captcha response status: {r.status_code}")
         
         d = r.json()
-        logger.info(f"Captcha response keys: {list(d.keys())}")
         
         if d.get("imageBase64") and d.get("transactionId"):
             return base64.b64decode(d["imageBase64"]), d["transactionId"]
-        else:
-            logger.error(f"Captcha response missing data: {d}")
     except Exception as e:
         logger.error(f"Captcha error: {e}")
-        import traceback
-        traceback.print_exc()
     return None, None
 
 def _api_call(session, url, payload, label="API"):
-    """Make API request to UIDAI endpoint"""
     try:
         logger.info(f"{label} Request: {json.dumps(payload)}")
-        r = session.post(
-            url,
-            headers=_H,
-            json=payload,
-            timeout=15
-        )
+        r = session.post(url, headers=_H, json=payload, timeout=15)
         logger.info(f"{label} Response status: {r.status_code}")
-        
         result = r.json()
-        logger.info(f"{label} Response: {json.dumps(result)[:500]}")
-        
         return result, None
     except Exception as e:
         logger.error(f"{label} Error: {e}")
-        import traceback
-        traceback.print_exc()
         return None, str(e)
 
 def _unlock_pdf(pdf_bytes: bytes, name: str) -> Tuple[Optional[bytes], Optional[str]]:
-    """Attempt to unlock Aadhaar PDF with name+birthyear pattern"""
     if not pdf_bytes or pdf_bytes[:4] != b'%PDF':
         return None, None
     prefix = ' '.join(name.split()).upper()[:4] if name else "MR"
@@ -222,6 +188,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, Conversati
 (NAME, MOBILE, CAP1, OTP1, CAP2, OTP2) = range(6)
 
 BOT_TOKEN = None
+BOT_APP = None
 
 class UserSession:
     def __init__(self):
@@ -239,33 +206,15 @@ class UserSession:
         self.otp2_txn = None
 
 # ============================================================
-# TOKEN MANAGEMENT - FIXED FOR RENDER
+# TOKEN MANAGEMENT
 # ============================================================
 
-def get_token():
-    print("\n" + "="*50)
-    print("   SkillX Aadhar PDF Tool")
-    print("="*50)
-    print("\n📝 Enter your Telegram Bot Token:")
-    print("   (Get it from @BotFather on Telegram)")
-    print()
-    
-    token = input("> ").strip()
-    
-    if not token or ":" not in token:
-        print("❌ Invalid token format!")
-        sys.exit(1)
-    
-    return token
-
 def load_token():
-    # 1. Environment variable se le
     token = os.environ.get("BOT_TOKEN")
     if token and ":" in token:
         print("✅ Using BOT_TOKEN from environment")
         return token
     
-    # 2. File se le
     if os.path.exists(".bot_token"):
         with open(".bot_token", "r") as f:
             token = f.read().strip()
@@ -273,8 +222,8 @@ def load_token():
             print("✅ Using saved bot token")
             return token
     
-    # 3. Terminal se maang
-    return get_token()
+    print("❌ No valid BOT_TOKEN found!")
+    sys.exit(1)
 
 # ============================================================
 # BOT HANDLERS
@@ -370,7 +319,7 @@ async def get_captcha1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     await progress.delete()
     
     if not result:
-        await update.message.reply_text(f"❌ No response from server. /start to retry")
+        await update.message.reply_text("❌ No response from server. /start to retry")
         return ConversationHandler.END
     
     status = result.get("status")
@@ -583,18 +532,18 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 # ============================================================
-# MAIN BOT FUNCTION
+# BOT INITIALIZATION
 # ============================================================
 
-def main():
-    global BOT_TOKEN
+def init_bot():
+    global BOT_TOKEN, BOT_APP
     BOT_TOKEN = load_token()
     
     if not BOT_TOKEN or ":" not in BOT_TOKEN:
         print("❌ Invalid BOT_TOKEN!")
-        return
+        return False
     
-    app_bot = Application.builder().token(BOT_TOKEN).build()
+    BOT_APP = Application.builder().token(BOT_TOKEN).build()
     
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -610,13 +559,10 @@ def main():
         conversation_timeout=_SESSION_TTL
     )
     
-    app_bot.add_handler(conv)
+    BOT_APP.add_handler(conv)
     
-    print("\n✅ Bot is running!")
-    print("   Send /start on Telegram to begin")
-    print("\n   Press Ctrl+C to stop\n")
-    
-    app_bot.run_polling(drop_pending_updates=True)
+    print("✅ Bot initialized successfully")
+    return True
 
 # ============================================================
 # FLASK ROUTES
@@ -630,15 +576,66 @@ def home():
 def health():
     return "OK", 200
 
+@app.route('/webhook', methods=['POST'])
+async def webhook():
+    """Handle Telegram updates via webhook."""
+    if not BOT_APP:
+        return "Bot not initialized", 500
+    
+    try:
+        json_data = request.get_json(force=True)
+        update = Update.de_json(json_data, BOT_APP.bot)
+        await BOT_APP.process_update(update)
+        return "OK", 200
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return "Error", 500
+
 # ============================================================
 # RUN
 # ============================================================
 
 if __name__ == '__main__':
-    # Start bot in background thread
-    bot_thread = threading.Thread(target=main, daemon=True)
-    bot_thread.start()
+    print("="*50)
+    print("   SkillX Aadhar PDF Tool - Render Webhook Mode")
+    print("="*50)
+    
+    # Initialize bot
+    if not init_bot():
+        print("❌ Bot initialization failed!")
+        sys.exit(1)
+    
+    # Set webhook
+    try:
+        # Delete any existing webhook
+        BOT_APP.bot.delete_webhook()
+        time.sleep(1)
+        
+        # Get Render URL
+        render_host = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
+        if render_host:
+            webhook_url = f"https://{render_host}/webhook"
+        else:
+            # Local development fallback
+            port = int(os.environ.get('PORT', 10000))
+            webhook_url = f"http://localhost:{port}/webhook"
+        
+        BOT_APP.bot.set_webhook(webhook_url)
+        print(f"✅ Webhook set to: {webhook_url}")
+        
+    except Exception as e:
+        print(f"❌ Webhook setup error: {e}")
+        print("   Continuing with polling mode...")
+        # Fallback to polling if webhook fails
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(BOT_APP.initialize())
+        loop.run_until_complete(BOT_APP.start())
+        loop.run_forever()
     
     # Run web server
     port = int(os.environ.get('PORT', 10000))
+    print(f"🚀 Web server running on port {port}")
+    print("✅ Bot is ready!")
     app.run(host='0.0.0.0', port=port)
