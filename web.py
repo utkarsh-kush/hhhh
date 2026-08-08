@@ -11,6 +11,7 @@ import pikepdf
 import logging
 import hashlib
 import time
+import threading
 from typing import Tuple, Optional
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
@@ -79,6 +80,43 @@ _DBG_TRACE = "tJg9MmgU0A61I"
 _CONTENT_HASH = "fdDwvQ3xYi6H2S0P9Kdnpg=="
 _SIG_FRAG = "OKxgLvdvNjZ"
 _RETRY_CTR = "shnifz/vMiG"
+
+# ============================================================
+# PERSISTENT EVENT LOOP THREAD
+# ============================================================
+_event_loop = None
+_event_loop_thread = None
+_bot_running = False
+
+def start_event_loop():
+    """Start a dedicated thread with a persistent asyncio event loop."""
+    global _event_loop, _event_loop_thread
+    
+    _event_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(_event_loop)
+    
+    def run_loop():
+        asyncio.set_event_loop(_event_loop)
+        _event_loop.run_forever()
+    
+    _event_loop_thread = threading.Thread(target=run_loop, daemon=True)
+    _event_loop_thread.start()
+    logger.info("✅ Persistent event loop thread started")
+
+def run_async(coro):
+    """Submit a coroutine to the persistent event loop from any thread."""
+    global _event_loop
+    if _event_loop is None:
+        raise RuntimeError("Event loop not started")
+    future = asyncio.run_coroutine_threadsafe(coro, _event_loop)
+    return future.result()
+
+def run_async_async(coro):
+    """Submit a coroutine to the persistent event loop and return future."""
+    global _event_loop
+    if _event_loop is None:
+        raise RuntimeError("Event loop not started")
+    return asyncio.run_coroutine_threadsafe(coro, _event_loop)
 
 # ============================================================
 # UTILITY FUNCTIONS
@@ -223,7 +261,7 @@ def load_token():
             return token
     
     print("❌ No valid BOT_TOKEN found!")
-    sys.exit(1)
+    return None
 
 # ============================================================
 # BOT HANDLERS
@@ -532,6 +570,18 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 # ============================================================
+# ERROR HANDLER
+# ============================================================
+
+async def error_handler(update: Optional[Update], context: ContextTypes.DEFAULT_TYPE):
+    """Log errors from PTB."""
+    logger.error(f"PTB Error: {context.error}")
+    if update:
+        logger.error(f"Update that caused error: {update}")
+    import traceback
+    traceback.print_exc()
+
+# ============================================================
 # BOT INITIALIZATION
 # ============================================================
 
@@ -543,6 +593,7 @@ def init_bot():
         print("❌ Invalid BOT_TOKEN!")
         return False
     
+    # Build application with job queue support
     BOT_APP = Application.builder().token(BOT_TOKEN).build()
     
     conv = ConversationHandler(
@@ -560,25 +611,57 @@ def init_bot():
     )
     
     BOT_APP.add_handler(conv)
+    BOT_APP.add_error_handler(error_handler)
     
     print("✅ Bot initialized successfully")
     return True
 
 # ============================================================
-# ASYNC SETUP FUNCTION FOR GUNICORN
+# START BOT APPLICATION ON PERSISTENT EVENT LOOP
 # ============================================================
 
-def setup_bot():
-    """Setup bot application for production under Gunicorn."""
-    global BOT_APP, BOT_TOKEN
+def start_bot_application():
+    """Start the PTB Application on the persistent event loop."""
+    global _bot_running
     
-    print("="*50)
-    print("   SkillX Aadhar PDF Tool - Production Mode")
-    print("="*50)
+    if BOT_APP is None:
+        logger.error("❌ Cannot start: BOT_APP is None")
+        return False
     
-    # Initialize bot
-    if not init_bot():
-        print("❌ Bot initialization failed!")
+    try:
+        # Start the event loop thread first
+        start_event_loop()
+        
+        # Define async startup coroutine
+        async def startup():
+            await BOT_APP.initialize()
+            await BOT_APP.start()
+            logger.info("✅ PTB Application started")
+            return True
+        
+        # Run startup on the persistent loop
+        result = run_async(startup())
+        
+        if result:
+            _bot_running = True
+            logger.info("✅ Bot application is running on persistent event loop")
+            return True
+        else:
+            logger.error("❌ Bot application failed to start")
+            return False
+            
+    except Exception as e:
+        logger.exception(f"❌ Failed to start bot application: {e}")
+        return False
+
+# ============================================================
+# CONFIGURE WEBHOOK ON PERSISTENT EVENT LOOP
+# ============================================================
+
+def configure_webhook():
+    """Configure webhook on the persistent event loop."""
+    if BOT_APP is None:
+        logger.error("❌ Cannot configure webhook: BOT_APP is None")
         return False
     
     try:
@@ -587,19 +670,15 @@ def setup_bot():
         if render_host:
             webhook_url = f"https://{render_host}/webhook"
         else:
-            # Fallback - try to get from environment
             webhook_url = os.environ.get('WEBHOOK_URL')
             if not webhook_url:
-                print("⚠️ No webhook URL found! Bot will not receive updates.")
+                logger.error("⚠️ No WEBHOOK_URL found!")
                 return False
         
-        print(f"📡 Setting webhook to: {webhook_url}")
+        logger.info(f"📡 Configuring webhook to: {webhook_url}")
         
-        # Run async setup
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        async def setup():
+        # Define async webhook config
+        async def setup_webhook():
             # Delete existing webhook
             await BOT_APP.bot.delete_webhook()
             await asyncio.sleep(1)
@@ -611,30 +690,23 @@ def setup_bot():
                 allowed_updates=["message", "callback_query"]
             )
             
-            # Verify webhook
+            # Verify
             info = await BOT_APP.bot.get_webhook_info()
-            print(f"✅ Webhook info: {info.url}")
-            
-            # Initialize application
-            await BOT_APP.initialize()
-            print("✅ Application initialized")
-            
+            logger.info(f"✅ Webhook info: {info.url}")
             return True
         
-        result = loop.run_until_complete(setup())
-        loop.close()
+        # Run on persistent loop
+        result = run_async(setup_webhook())
         
         if result:
-            print("✅ Bot setup complete!")
+            logger.info("✅ Webhook configured successfully")
             return True
         else:
-            print("❌ Bot setup failed!")
+            logger.error("❌ Webhook configuration failed")
             return False
             
     except Exception as e:
-        print(f"❌ Bot setup error: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"❌ Webhook configuration error: {e}")
         return False
 
 # ============================================================
@@ -652,47 +724,65 @@ def health():
         "flask": "ok",
         "env_token_exists": bool(os.environ.get("BOT_TOKEN")),
         "bot_initialized": BOT_APP is not None,
-        "webhook_configured": BOT_APP is not None
+        "bot_running": _bot_running,
+        "event_loop_running": _event_loop is not None and _event_loop.is_running(),
+        "webhook_configured": _bot_running
     }, 200
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Handle Telegram updates via webhook."""
     if not BOT_APP:
+        logger.error("❌ BOT_APP is None")
         return "Bot not initialized", 500
+    
+    if not _bot_running:
+        logger.error("❌ Bot application not running")
+        return "Bot not running", 500
     
     try:
         json_data = request.get_json(force=True)
         update = Update.de_json(json_data, BOT_APP.bot)
         
-        # Process update asynchronously
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        # Submit update to persistent event loop using run_coroutine_threadsafe
+        future = run_async_async(BOT_APP.process_update(update))
+        
+        # Wait for completion with timeout
         try:
-            loop.run_until_complete(BOT_APP.process_update(update))
-        finally:
-            loop.close()
+            future.result(timeout=30)
+        except Exception as e:
+            logger.error(f"Update processing error: {e}")
+            import traceback
+            traceback.print_exc()
+            return "Error processing update", 500
         
         return "OK", 200
+        
     except Exception as e:
-        logger.error(f"Webhook error: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"Webhook error: {e}")
         return "Error", 500
 
 # ============================================================
 # PRODUCTION SETUP - RUNS ON GUNICORN IMPORT
 # ============================================================
 
-# This runs when Gunicorn imports the module
-# Setup bot for production
 print("🚀 Initializing bot for production...")
-setup_success = setup_bot()
 
-if not setup_success:
-    print("⚠️ Bot setup had issues. Continuing with Flask only.")
+# Initialize bot
+if init_bot():
+    # Start bot application on persistent event loop
+    if start_bot_application():
+        # Configure webhook
+        if configure_webhook():
+            print("✅ Bot is fully ready to receive updates!")
+        else:
+            print("⚠️ Webhook configuration failed")
+    else:
+        print("⚠️ Bot application failed to start")
 else:
-    print("✅ Bot is ready to receive updates!")
+    print("⚠️ Bot initialization failed")
+
+print("✅ Flask server starting...")
 
 # ============================================================
 # RUN - ONLY FOR LOCAL DEVELOPMENT
@@ -708,38 +798,14 @@ if __name__ == '__main__':
         print("❌ Bot initialization failed!")
         sys.exit(1)
     
-    # Setup webhook for local development
-    try:
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        async def local_setup():
-            await BOT_APP.bot.delete_webhook()
-            await asyncio.sleep(1)
-            
-            port = int(os.environ.get('PORT', 10000))
-            webhook_url = f"http://localhost:{port}/webhook"
-            await BOT_APP.bot.set_webhook(
-                webhook_url,
-                drop_pending_updates=True,
-                allowed_updates=["message", "callback_query"]
-            )
-            print(f"✅ Webhook set to: {webhook_url}")
-            await BOT_APP.initialize()
-        
-        loop.run_until_complete(local_setup())
-        loop.close()
-        
-    except Exception as e:
-        print(f"❌ Setup error: {e}")
-        print("   Continuing with polling mode...")
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(BOT_APP.initialize())
-        loop.run_until_complete(BOT_APP.start())
-        loop.run_forever()
+    # Start bot on event loop
+    if not start_bot_application():
+        print("❌ Bot application failed to start!")
+        sys.exit(1)
+    
+    # Configure webhook
+    if not configure_webhook():
+        print("⚠️ Webhook configuration failed")
     
     # Run web server
     port = int(os.environ.get('PORT', 10000))
