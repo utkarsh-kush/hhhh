@@ -565,6 +565,79 @@ def init_bot():
     return True
 
 # ============================================================
+# ASYNC SETUP FUNCTION FOR GUNICORN
+# ============================================================
+
+def setup_bot():
+    """Setup bot application for production under Gunicorn."""
+    global BOT_APP, BOT_TOKEN
+    
+    print("="*50)
+    print("   SkillX Aadhar PDF Tool - Production Mode")
+    print("="*50)
+    
+    # Initialize bot
+    if not init_bot():
+        print("❌ Bot initialization failed!")
+        return False
+    
+    try:
+        # Get Render hostname
+        render_host = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
+        if render_host:
+            webhook_url = f"https://{render_host}/webhook"
+        else:
+            # Fallback - try to get from environment
+            webhook_url = os.environ.get('WEBHOOK_URL')
+            if not webhook_url:
+                print("⚠️ No webhook URL found! Bot will not receive updates.")
+                return False
+        
+        print(f"📡 Setting webhook to: {webhook_url}")
+        
+        # Run async setup
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        async def setup():
+            # Delete existing webhook
+            await BOT_APP.bot.delete_webhook()
+            await asyncio.sleep(1)
+            
+            # Set new webhook
+            await BOT_APP.bot.set_webhook(
+                webhook_url,
+                drop_pending_updates=True,
+                allowed_updates=["message", "callback_query"]
+            )
+            
+            # Verify webhook
+            info = await BOT_APP.bot.get_webhook_info()
+            print(f"✅ Webhook info: {info.url}")
+            
+            # Initialize application
+            await BOT_APP.initialize()
+            print("✅ Application initialized")
+            
+            return True
+        
+        result = loop.run_until_complete(setup())
+        loop.close()
+        
+        if result:
+            print("✅ Bot setup complete!")
+            return True
+        else:
+            print("❌ Bot setup failed!")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Bot setup error: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+# ============================================================
 # FLASK ROUTES
 # ============================================================
 
@@ -574,14 +647,16 @@ def home():
 
 @app.route('/health')
 def health():
+    """Health check endpoint with diagnostic info."""
     return {
         "flask": "ok",
+        "env_token_exists": bool(os.environ.get("BOT_TOKEN")),
         "bot_initialized": BOT_APP is not None,
-        "token_loaded": BOT_TOKEN is not None
+        "webhook_configured": BOT_APP is not None
     }, 200
 
 @app.route('/webhook', methods=['POST'])
-async def webhook():
+def webhook():
     """Handle Telegram updates via webhook."""
     if not BOT_APP:
         return "Bot not initialized", 500
@@ -589,19 +664,43 @@ async def webhook():
     try:
         json_data = request.get_json(force=True)
         update = Update.de_json(json_data, BOT_APP.bot)
-        await BOT_APP.process_update(update)
+        
+        # Process update asynchronously
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(BOT_APP.process_update(update))
+        finally:
+            loop.close()
+        
         return "OK", 200
     except Exception as e:
         logger.error(f"Webhook error: {e}")
+        import traceback
+        traceback.print_exc()
         return "Error", 500
 
 # ============================================================
-# RUN
+# PRODUCTION SETUP - RUNS ON GUNICORN IMPORT
+# ============================================================
+
+# This runs when Gunicorn imports the module
+# Setup bot for production
+print("🚀 Initializing bot for production...")
+setup_success = setup_bot()
+
+if not setup_success:
+    print("⚠️ Bot setup had issues. Continuing with Flask only.")
+else:
+    print("✅ Bot is ready to receive updates!")
+
+# ============================================================
+# RUN - ONLY FOR LOCAL DEVELOPMENT
 # ============================================================
 
 if __name__ == '__main__':
     print("="*50)
-    print("   SkillX Aadhar PDF Tool - Render Webhook Mode")
+    print("   SkillX Aadhar PDF Tool - Development Mode")
     print("="*50)
     
     # Initialize bot
@@ -609,28 +708,32 @@ if __name__ == '__main__':
         print("❌ Bot initialization failed!")
         sys.exit(1)
     
-    # Set webhook
+    # Setup webhook for local development
     try:
-        # Delete any existing webhook
-        BOT_APP.bot.delete_webhook()
-        time.sleep(1)
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         
-        # Get Render URL
-        render_host = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
-        if render_host:
-            webhook_url = f"https://{render_host}/webhook"
-        else:
-            # Local development fallback
+        async def local_setup():
+            await BOT_APP.bot.delete_webhook()
+            await asyncio.sleep(1)
+            
             port = int(os.environ.get('PORT', 10000))
             webhook_url = f"http://localhost:{port}/webhook"
+            await BOT_APP.bot.set_webhook(
+                webhook_url,
+                drop_pending_updates=True,
+                allowed_updates=["message", "callback_query"]
+            )
+            print(f"✅ Webhook set to: {webhook_url}")
+            await BOT_APP.initialize()
         
-        BOT_APP.bot.set_webhook(webhook_url)
-        print(f"✅ Webhook set to: {webhook_url}")
+        loop.run_until_complete(local_setup())
+        loop.close()
         
     except Exception as e:
-        print(f"❌ Webhook setup error: {e}")
+        print(f"❌ Setup error: {e}")
         print("   Continuing with polling mode...")
-        # Fallback to polling if webhook fails
         import asyncio
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
