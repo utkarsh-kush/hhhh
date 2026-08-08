@@ -1,4 +1,8 @@
-from flask import Flask, request
+#!/usr/bin/env python3
+"""
+SkillX Aadhar PDF Tool - Telegram Bot (Render Webhook Mode)
+"""
+
 import os
 import sys
 import json
@@ -10,20 +14,10 @@ import requests
 import pikepdf
 import logging
 import hashlib
-import time
-import threading
 from typing import Tuple, Optional
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 
-# ============================================================
-# FLASK APP
-# ============================================================
-app = Flask(__name__)
-
-# ============================================================
-# LOGGING
-# ============================================================
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -85,6 +79,16 @@ _RETRY_CTR = "shnifz/vMiG"
 # UTILITY FUNCTIONS
 # ============================================================
 
+def _fmt_time():
+    from datetime import datetime
+    return datetime.now().strftime("%H:%M:%S")
+
+def _clean_temp():
+    import glob
+    for f in glob.glob("captcha*.png"):
+        try: os.remove(f)
+        except: pass
+
 def _validate_number(num: str, length: int = 10) -> bool:
     return num.isdigit() and len(num) == length
 
@@ -133,35 +137,58 @@ def _get_credit_text() -> str:
 # ============================================================
 
 def _get_captcha(session: requests.Session) -> Tuple[Optional[bytes], Optional[str]]:
+    """Generate captcha image from UIDAI"""
     try:
         payload = {
             "captchaLength": "6",
             "captchaType": "2",
             "audioCaptchaRequired": True
         }
-        r = session.post(_EP2, headers=_H, json=payload, timeout=15)
+        r = session.post(
+            _EP2,
+            headers=_H,
+            json=payload,
+            timeout=15
+        )
         logger.info(f"Captcha response status: {r.status_code}")
         
         d = r.json()
+        logger.info(f"Captcha response keys: {list(d.keys())}")
         
         if d.get("imageBase64") and d.get("transactionId"):
             return base64.b64decode(d["imageBase64"]), d["transactionId"]
+        else:
+            logger.error(f"Captcha response missing data: {d}")
     except Exception as e:
         logger.error(f"Captcha error: {e}")
+        import traceback
+        traceback.print_exc()
     return None, None
 
 def _api_call(session, url, payload, label="API"):
+    """Make API request to UIDAI endpoint"""
     try:
         logger.info(f"{label} Request: {json.dumps(payload)}")
-        r = session.post(url, headers=_H, json=payload, timeout=15)
+        r = session.post(
+            url,
+            headers=_H,
+            json=payload,
+            timeout=15
+        )
         logger.info(f"{label} Response status: {r.status_code}")
+        
         result = r.json()
+        logger.info(f"{label} Response: {json.dumps(result)[:500]}")
+        
         return result, None
     except Exception as e:
         logger.error(f"{label} Error: {e}")
+        import traceback
+        traceback.print_exc()
         return None, str(e)
 
 def _unlock_pdf(pdf_bytes: bytes, name: str) -> Tuple[Optional[bytes], Optional[str]]:
+    """Attempt to unlock Aadhaar PDF with name+birthyear pattern"""
     if not pdf_bytes or pdf_bytes[:4] != b'%PDF':
         return None, None
     prefix = ' '.join(name.split()).upper()[:4] if name else "MR"
@@ -189,11 +216,6 @@ from telegram.ext import Application, CommandHandler, MessageHandler, Conversati
 (NAME, MOBILE, CAP1, OTP1, CAP2, OTP2) = range(6)
 
 BOT_TOKEN = None
-BOT_APP = None
-_app_loop = None
-_app_thread = None
-_bot_ready = threading.Event()
-_bot_running = False
 
 class UserSession:
     def __init__(self):
@@ -211,32 +233,11 @@ class UserSession:
         self.otp2_txn = None
 
 # ============================================================
-# TOKEN MANAGEMENT
-# ============================================================
-
-def load_token():
-    token = os.environ.get("BOT_TOKEN")
-    if token and ":" in token:
-        print("✅ Using BOT_TOKEN from environment")
-        return token
-    
-    if os.path.exists(".bot_token"):
-        with open(".bot_token", "r") as f:
-            token = f.read().strip()
-        if token and ":" in token:
-            print("✅ Using saved bot token")
-            return token
-    
-    print("❌ No valid BOT_TOKEN found!")
-    return None
-
-# ============================================================
 # BOT HANDLERS
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    logger.info(f"START HANDLER: User {user_id}")
     
     if user_id in _SESSIONS:
         del _SESSIONS[user_id]
@@ -248,12 +249,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         "_Type Mr to skip_",
         parse_mode="Markdown"
     )
-    logger.info(f"START HANDLER: Sent name prompt to {user_id}")
     return NAME
 
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    logger.info(f"GET_NAME: User {user_id}")
     us = _SESSIONS.get(user_id)
     if not us:
         await update.message.reply_text("Session expired. /start again.")
@@ -266,12 +265,10 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         f"✅ Name: {us.name}\n\n"
         "📱 Enter your 10-digit Mobile Number"
     )
-    logger.info(f"GET_NAME: Name saved, sent mobile prompt to {user_id}")
     return MOBILE
 
 async def get_mobile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    logger.info(f"GET_MOBILE: User {user_id}")
     us = _SESSIONS.get(user_id)
     if not us:
         await update.message.reply_text("Session expired. /start again.")
@@ -299,12 +296,10 @@ async def get_mobile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         photo=io.BytesIO(img_bytes),
         caption="📸 Enter the captcha text"
     )
-    logger.info(f"GET_MOBILE: Captcha sent to {user_id}")
     return CAP1
 
 async def get_captcha1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    logger.info(f"GET_CAPTCHA1: User {user_id}")
     us = _SESSIONS.get(user_id)
     if not us:
         await update.message.reply_text("Session expired. /start again.")
@@ -331,7 +326,7 @@ async def get_captcha1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     await progress.delete()
     
     if not result:
-        await update.message.reply_text("❌ No response from server. /start to retry")
+        await update.message.reply_text(f"❌ No response from server. /start to retry")
         return ConversationHandler.END
     
     status = result.get("status")
@@ -345,7 +340,6 @@ async def get_captcha1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             f"✅ OTP Sent to {masked}\n\n"
             "📝 Enter the 6-digit OTP"
         )
-        logger.info(f"GET_CAPTCHA1: OTP sent to {user_id}")
         return OTP1
     else:
         msg = result.get("responseData", {}).get("message", "Failed to send OTP")
@@ -355,7 +349,6 @@ async def get_captcha1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def get_otp1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    logger.info(f"GET_OTP1: User {user_id}")
     us = _SESSIONS.get(user_id)
     if not us:
         await update.message.reply_text("Session expired. /start again.")
@@ -413,7 +406,6 @@ async def get_otp1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             photo=io.BytesIO(img_bytes),
             caption="📸 Enter the download captcha"
         )
-        logger.info(f"GET_OTP1: Download captcha sent to {user_id}")
         return CAP2
     else:
         msg = result.get("responseData", {}).get("message", "Invalid OTP")
@@ -422,7 +414,6 @@ async def get_otp1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def get_captcha2(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    logger.info(f"GET_CAPTCHA2: User {user_id}")
     us = _SESSIONS.get(user_id)
     if not us:
         await update.message.reply_text("Session expired. /start again.")
@@ -455,12 +446,10 @@ async def get_captcha2(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         "✅ Download OTP Sent!\n\n"
         "📝 Enter the Download OTP"
     )
-    logger.info(f"GET_CAPTCHA2: Download OTP sent to {user_id}")
     return OTP2
 
 async def get_otp2(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    logger.info(f"GET_OTP2: User {user_id}")
     us = _SESSIONS.get(user_id)
     if not us:
         await update.message.reply_text("Session expired. /start again.")
@@ -527,7 +516,6 @@ async def get_otp2(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                     f"✅ Download Complete!\n\n"
                     f"{_credit}"
                 )
-                logger.info(f"GET_OTP2: PDF downloaded for {user_id}")
             else:
                 await update.message.reply_text("❌ No PDF data in response")
         else:
@@ -536,7 +524,6 @@ async def get_otp2(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             
     except Exception as e:
         await progress.delete()
-        logger.exception(f"GET_OTP2: Error for {user_id}: {e}")
         await update.message.reply_text(f"❌ Error: {str(e)}")
     
     if user_id in _SESSIONS:
@@ -556,24 +543,47 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # ============================================================
 
 async def error_handler(update: Optional[Update], context: ContextTypes.DEFAULT_TYPE):
+    """Log errors from PTB."""
     logger.error(f"PTB Error: {context.error}")
     if update:
         logger.error(f"Update that caused error: {update}")
+    import traceback
+    traceback.print_exc()
 
 # ============================================================
-# BOT INITIALIZATION
+# TOKEN MANAGEMENT
 # ============================================================
 
-def init_bot():
-    global BOT_TOKEN, BOT_APP
+def load_token():
+    """Load token from environment (Render) or .bot_token file (VPS)."""
+    token = os.environ.get("BOT_TOKEN")
+    if token and ":" in token:
+        print("✅ Using BOT_TOKEN from environment")
+        return token
+    
+    if os.path.exists(".bot_token"):
+        with open(".bot_token", "r") as f:
+            token = f.read().strip()
+        if token and ":" in token:
+            print("✅ Using saved bot token")
+            return token
+    
+    print("❌ No valid BOT_TOKEN found!")
+    print("   Please set BOT_TOKEN environment variable or create .bot_token file")
+    sys.exit(1)
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+    global BOT_TOKEN
     BOT_TOKEN = load_token()
     
-    if not BOT_TOKEN or ":" not in BOT_TOKEN:
-        print("❌ Invalid BOT_TOKEN!")
-        return False
+    # Build application
+    app = Application.builder().token(BOT_TOKEN).build()
     
-    BOT_APP = Application.builder().token(BOT_TOKEN).build()
-    
+    # Register ConversationHandler
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -588,186 +598,49 @@ def init_bot():
         conversation_timeout=_SESSION_TTL
     )
     
-    BOT_APP.add_handler(conv)
-    BOT_APP.add_error_handler(error_handler)
+    app.add_handler(conv)
+    app.add_error_handler(error_handler)
     
-    print("✅ Bot initialized successfully")
-    return True
-
-# ============================================================
-# PTB APPLICATION RUNNER IN BACKGROUND THREAD
-# ============================================================
-
-def run_application_with_webhook():
-    """Run PTB Application with webhook in a background thread using PTB's own event loop."""
-    global _bot_running, _bot_ready, _app_loop
-    
-    try:
-        # Get webhook URL
-        render_host = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
-        if render_host:
-            webhook_url = f"https://{render_host}/webhook"
-        else:
-            webhook_url = os.environ.get('WEBHOOK_URL')
-            if not webhook_url:
-                logger.error("❌ No webhook URL available")
-                return
-        
-        logger.info(f"📡 Running PTB Application with webhook: {webhook_url}")
-        
-        # Create and set the event loop for this thread
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        _app_loop = loop
-        
-        # Run the application using PTB's built-in webhook runner
-        # This keeps the loop running and processes updates from the webhook
-        loop.run_until_complete(BOT_APP.initialize())
-        loop.run_until_complete(BOT_APP.start())
-        
-        # Set webhook
-        async def setup_webhook():
-            await BOT_APP.bot.delete_webhook()
-            await asyncio.sleep(0.5)
-            await BOT_APP.bot.set_webhook(
-                webhook_url,
-                drop_pending_updates=True,
-                allowed_updates=["message", "callback_query"]
-            )
-            info = await BOT_APP.bot.get_webhook_info()
-            logger.info(f"✅ Webhook configured: {info.url}")
-            return True
-        
-        result = loop.run_until_complete(setup_webhook())
-        
-        if result:
-            _bot_running = True
-            _bot_ready.set()
-            logger.info("✅ PTB Application is running with webhook support")
-            logger.info("✅ Update processor is active and waiting for updates")
-            
-            # Keep the loop running forever
-            loop.run_forever()
-        else:
-            logger.error("❌ Webhook setup failed")
-            
-    except Exception as e:
-        logger.exception(f"❌ Application runner error: {e}")
-        _bot_ready.set()  # Unblock health check even on error
-
-# ============================================================
-# FLASK ROUTES
-# ============================================================
-
-@app.route('/')
-def home():
-    return "🟢 Bot is running!"
-
-@app.route('/health')
-def health():
-    return {
-        "flask": "ok",
-        "env_token_exists": bool(os.environ.get("BOT_TOKEN")),
-        "bot_initialized": BOT_APP is not None,
-        "bot_running": _bot_running,
-        "event_loop_running": _app_loop is not None and _app_loop.is_running(),
-        "webhook_configured": _bot_running,
-        "bot_ready": _bot_ready.is_set(),
-        "update_queue_size": BOT_APP.update_queue.qsize() if BOT_APP and hasattr(BOT_APP, 'update_queue') else 0
-    }, 200
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    """
-    Handle Telegram updates via webhook.
-    PTB's built-in webhook handler processes updates via its internal queue.
-    """
-    if not BOT_APP:
-        logger.error("❌ BOT_APP is None")
-        return "Bot not initialized", 500
-    
-    if not _bot_running:
-        logger.error("❌ Bot application not running")
-        return "Bot not running", 500
-    
-    try:
-        json_data = request.get_json(force=True)
-        update = Update.de_json(json_data, BOT_APP.bot)
-        
-        if not update:
-            logger.error("❌ Failed to parse update")
-            return "Invalid update", 400
-        
-        # Submit to PTB's update queue on the application's loop
-        if _app_loop and _app_loop.is_running():
-            future = asyncio.run_coroutine_threadsafe(
-                BOT_APP.update_queue.put(update),
-                _app_loop
-            )
-            
-            # Log any errors
-            def log_future_error(fut):
-                try:
-                    fut.result()
-                except Exception as e:
-                    logger.exception(f"❌ Queue put error: {e}")
-            
-            future.add_done_callback(log_future_error)
-            
-            logger.info(f"📩 Update queued: update_id={update.update_id}")
-            return "OK", 200
-        else:
-            logger.error("❌ Event loop not running")
-            return "Event loop not running", 500
-        
-    except Exception as e:
-        logger.exception(f"❌ Webhook error: {e}")
-        return "Error", 500
-
-# ============================================================
-# PRODUCTION SETUP - RUNS ON GUNICORN IMPORT
-# ============================================================
-
-print("🚀 Initializing bot for production...")
-
-if init_bot():
-    # Start PTB Application in background thread
-    app_thread = threading.Thread(target=run_application_with_webhook, daemon=True)
-    app_thread.start()
-    _app_thread = app_thread
-    
-    # Wait for bot to be ready
-    if _bot_ready.wait(timeout=30):
-        print("✅ Bot is fully ready to receive updates!")
-    else:
-        print("⚠️ Bot may not be ready yet")
-else:
-    print("⚠️ Bot initialization failed")
-
-print("✅ Flask server starting...")
-
-# ============================================================
-# RUN - ONLY FOR LOCAL DEVELOPMENT
-# ============================================================
-
-if __name__ == '__main__':
-    print("="*50)
-    print("   SkillX Aadhar PDF Tool - Development Mode")
+    print("\n" + "="*50)
+    print("   SkillX Aadhar PDF Tool")
     print("="*50)
     
-    if not init_bot():
-        print("❌ Bot initialization failed!")
-        sys.exit(1)
+    # Check if running on Render (webhook mode) or locally (polling mode)
+    render_host = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
     
-    # Start in background
-    app_thread = threading.Thread(target=run_application_with_webhook, daemon=True)
-    app_thread.start()
-    
-    if _bot_ready.wait(timeout=30):
-        print("✅ Bot is ready!")
+    if render_host:
+        # RENDER MODE: Use PTB's built-in webhook
+        webhook_url = f"https://{render_host}/webhook"
+        port = int(os.environ.get("PORT", 10000))
+        
+        print(f"✅ Running in WEBHOOK mode")
+        print(f"📡 Webhook URL: {webhook_url}")
+        print(f"🔌 Listening on port: {port}")
+        print("\n   Press Ctrl+C to stop\n")
+        
+        # Use PTB's run_webhook - this handles everything!
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path="webhook",
+            webhook_url=webhook_url,
+            drop_pending_updates=True,
+            allowed_updates=["message", "callback_query"]
+        )
     else:
-        print("⚠️ Bot may not be ready yet")
-    
-    port = int(os.environ.get('PORT', 10000))
-    print(f"🚀 Web server running on port {port}")
-    app.run(host='0.0.0.0', port=port)
+        # LOCAL MODE: Use polling
+        print("✅ Running in POLLING mode (local development)")
+        print("   Send /start on Telegram to begin")
+        print("\n   Press Ctrl+C to stop\n")
+        
+        app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\n👋 Bot stopped")
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
