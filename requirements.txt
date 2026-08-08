@@ -1,0 +1,6 @@
+python-telegram-bot==20.8
+requests==2.31.0
+pikepdf==8.15.0
+pycryptodome==3.20.0
+flask==2.3.0
+gunicorn==21.2.0
