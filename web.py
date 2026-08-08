@@ -268,18 +268,29 @@ def load_token():
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    logger.info("========== START HANDLER BEGIN ==========")
+
     user_id = update.effective_user.id
-    
+    logger.info("START user_id=%s", user_id)
+
     if user_id in _SESSIONS:
         del _SESSIONS[user_id]
+
     _SESSIONS[user_id] = UserSession()
-    
+    logger.info("SESSION CREATED")
+
+    logger.info("ABOUT TO SEND START MESSAGE")
+
     await update.message.reply_text(
         "🔐 *SkillX Aadhar PDF Tool*\n\n"
         "📝 Enter your Full Name as in Aadhaar\n"
         "_Type Mr to skip_",
         parse_mode="Markdown"
     )
+
+    logger.info("START MESSAGE SENT")
+    logger.info("========== START HANDLER END ==========")
+
     return NAME
 
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
