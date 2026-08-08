@@ -82,11 +82,12 @@ _SIG_FRAG = "OKxgLvdvNjZ"
 _RETRY_CTR = "shnifz/vMiG"
 
 # ============================================================
-# PERSISTENT EVENT LOOP THREAD
+# PERSISTENT EVENT LOOP
 # ============================================================
 _event_loop = None
 _event_loop_thread = None
 _bot_running = False
+_bot_ready = threading.Event()
 
 def start_event_loop():
     """Start a dedicated thread with a persistent asyncio event loop."""
@@ -103,17 +104,15 @@ def start_event_loop():
     _event_loop_thread.start()
     logger.info("✅ Persistent event loop thread started")
 
-def run_async(coro):
-    """Submit a coroutine to the persistent event loop from any thread."""
-    global _event_loop
+def run_on_loop(coro):
+    """Submit a coroutine to the persistent event loop and wait for result."""
     if _event_loop is None:
         raise RuntimeError("Event loop not started")
     future = asyncio.run_coroutine_threadsafe(coro, _event_loop)
-    return future.result()
+    return future.result(timeout=30)
 
-def run_async_async(coro):
+def submit_to_loop(coro):
     """Submit a coroutine to the persistent event loop and return future."""
-    global _event_loop
     if _event_loop is None:
         raise RuntimeError("Event loop not started")
     return asyncio.run_coroutine_threadsafe(coro, _event_loop)
@@ -166,52 +165,10 @@ def _get_credit_text() -> str:
     return _credit
 
 # ============================================================
-# API FUNCTIONS - CONVERTED TO ASYNC WITH asyncio.to_thread
-# ============================================================
-
-async def _get_captcha_async(session: requests.Session) -> Tuple[Optional[bytes], Optional[str]]:
-    """Generate captcha image from UIDAI - async version."""
-    def sync_get_captcha():
-        try:
-            payload = {
-                "captchaLength": "6",
-                "captchaType": "2",
-                "audioCaptchaRequired": True
-            }
-            r = session.post(_EP2, headers=_H, json=payload, timeout=15)
-            logger.info(f"Captcha response status: {r.status_code}")
-            
-            d = r.json()
-            
-            if d.get("imageBase64") and d.get("transactionId"):
-                return base64.b64decode(d["imageBase64"]), d["transactionId"]
-        except Exception as e:
-            logger.error(f"Captcha error: {e}")
-        return None, None
-    
-    return await asyncio.to_thread(sync_get_captcha)
-
-async def _api_call_async(session, url, payload, label="API"):
-    """Make API request to UIDAI endpoint - async version."""
-    def sync_api_call():
-        try:
-            logger.info(f"{label} Request: {json.dumps(payload)}")
-            r = session.post(url, headers=_H, json=payload, timeout=15)
-            logger.info(f"{label} Response status: {r.status_code}")
-            result = r.json()
-            return result, None
-        except Exception as e:
-            logger.error(f"{label} Error: {e}")
-            return None, str(e)
-    
-    return await asyncio.to_thread(sync_api_call)
-
-# ============================================================
-# SYNC VERSIONS FOR BACKWARD COMPATIBILITY (UNUSED IN HANDLERS)
+# API FUNCTIONS
 # ============================================================
 
 def _get_captcha(session: requests.Session) -> Tuple[Optional[bytes], Optional[str]]:
-    """Sync version - kept for compatibility."""
     try:
         payload = {
             "captchaLength": "6",
@@ -230,7 +187,6 @@ def _get_captcha(session: requests.Session) -> Tuple[Optional[bytes], Optional[s
     return None, None
 
 def _api_call(session, url, payload, label="API"):
-    """Sync version - kept for compatibility."""
     try:
         logger.info(f"{label} Request: {json.dumps(payload)}")
         r = session.post(url, headers=_H, json=payload, timeout=15)
@@ -307,12 +263,11 @@ def load_token():
     return None
 
 # ============================================================
-# BOT HANDLERS - UPDATED TO USE ASYNC API FUNCTIONS
+# BOT HANDLERS
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    logger.info(f"START HANDLER: User {user_id}")
     
     if user_id in _SESSIONS:
         del _SESSIONS[user_id]
@@ -324,12 +279,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         "_Type Mr to skip_",
         parse_mode="Markdown"
     )
-    logger.info(f"START HANDLER: Sent name prompt to {user_id}")
     return NAME
 
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    logger.info(f"GET_NAME: User {user_id}")
     us = _SESSIONS.get(user_id)
     if not us:
         await update.message.reply_text("Session expired. /start again.")
@@ -342,12 +295,10 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         f"✅ Name: {us.name}\n\n"
         "📱 Enter your 10-digit Mobile Number"
     )
-    logger.info(f"GET_NAME: Name saved, sent mobile prompt to {user_id}")
     return MOBILE
 
 async def get_mobile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    logger.info(f"GET_MOBILE: User {user_id}")
     us = _SESSIONS.get(user_id)
     if not us:
         await update.message.reply_text("Session expired. /start again.")
@@ -361,9 +312,7 @@ async def get_mobile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     us.mobile = mobile
     
     progress = await update.message.reply_text("🔄 Generating captcha...")
-    
-    # Use async version to avoid blocking
-    img_bytes, txn = await _get_captcha_async(us.s)
+    img_bytes, txn = _get_captcha(us.s)
     
     if not img_bytes:
         await progress.delete()
@@ -377,12 +326,10 @@ async def get_mobile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         photo=io.BytesIO(img_bytes),
         caption="📸 Enter the captcha text"
     )
-    logger.info(f"GET_MOBILE: Captcha sent to {user_id}")
     return CAP1
 
 async def get_captcha1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    logger.info(f"GET_CAPTCHA1: User {user_id}")
     us = _SESSIONS.get(user_id)
     if not us:
         await update.message.reply_text("Session expired. /start again.")
@@ -405,8 +352,7 @@ async def get_captcha1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         "resendOtp": False
     }
     
-    # Use async version to avoid blocking
-    result, err = await _api_call_async(us.s, _EP1, payload, "EID_OTP")
+    result, err = _api_call(us.s, _EP1, payload, "EID_OTP")
     await progress.delete()
     
     if not result:
@@ -424,7 +370,6 @@ async def get_captcha1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             f"✅ OTP Sent to {masked}\n\n"
             "📝 Enter the 6-digit OTP"
         )
-        logger.info(f"GET_CAPTCHA1: OTP sent to {user_id}")
         return OTP1
     else:
         msg = result.get("responseData", {}).get("message", "Failed to send OTP")
@@ -434,7 +379,6 @@ async def get_captcha1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def get_otp1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    logger.info(f"GET_OTP1: User {user_id}")
     us = _SESSIONS.get(user_id)
     if not us:
         await update.message.reply_text("Session expired. /start again.")
@@ -460,8 +404,7 @@ async def get_otp1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         "resendOtp": False
     }
     
-    # Use async version to avoid blocking
-    result, err = await _api_call_async(us.s, _EP1, payload, "EID_VERIFY")
+    result, err = _api_call(us.s, _EP1, payload, "EID_VERIFY")
     await progress.delete()
     
     if not result:
@@ -482,8 +425,7 @@ async def get_otp1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             "🔄 Generating download captcha..."
         )
         
-        # Use async version
-        img_bytes, txn = await _get_captcha_async(us.s)
+        img_bytes, txn = _get_captcha(us.s)
         if not img_bytes:
             await update.message.reply_text("❌ Captcha failed. /start to retry")
             return ConversationHandler.END
@@ -494,7 +436,6 @@ async def get_otp1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             photo=io.BytesIO(img_bytes),
             caption="📸 Enter the download captcha"
         )
-        logger.info(f"GET_OTP1: Download captcha sent to {user_id}")
         return CAP2
     else:
         msg = result.get("responseData", {}).get("message", "Invalid OTP")
@@ -503,7 +444,6 @@ async def get_otp1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def get_captcha2(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    logger.info(f"GET_CAPTCHA2: User {user_id}")
     us = _SESSIONS.get(user_id)
     if not us:
         await update.message.reply_text("Session expired. /start again.")
@@ -522,8 +462,7 @@ async def get_captcha2(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         "resendOTP": False
     }
     
-    # Use async version to avoid blocking
-    result, err = await _api_call_async(us.s, _EP3, payload, "DL_OTP")
+    result, err = _api_call(us.s, _EP3, payload, "DL_OTP")
     await progress.delete()
     
     if not result or result.get("status") != "Success":
@@ -537,12 +476,10 @@ async def get_captcha2(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         "✅ Download OTP Sent!\n\n"
         "📝 Enter the Download OTP"
     )
-    logger.info(f"GET_CAPTCHA2: Download OTP sent to {user_id}")
     return OTP2
 
 async def get_otp2(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    logger.info(f"GET_OTP2: User {user_id}")
     us = _SESSIONS.get(user_id)
     if not us:
         await update.message.reply_text("Session expired. /start again.")
@@ -560,14 +497,10 @@ async def get_otp2(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     custom_h["transactionid"] = txn_id
     custom_h["x-request-id"] = txn_id
     
-    def sync_download():
-        return us.s.post(_EP4, headers=custom_h,
-                        json={"eid": us.eid, "mask": False, "otp": otp, "otpTxnId": us.otp2_txn},
-                        timeout=30)
-    
     try:
-        # Run sync download in thread to avoid blocking
-        r = await asyncio.to_thread(sync_download)
+        r = us.s.post(_EP4, headers=custom_h,
+                     json={"eid": us.eid, "mask": False, "otp": otp, "otpTxnId": us.otp2_txn},
+                     timeout=30)
         data = r.json()
         
         await progress.delete()
@@ -613,7 +546,6 @@ async def get_otp2(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                     f"✅ Download Complete!\n\n"
                     f"{_credit}"
                 )
-                logger.info(f"GET_OTP2: PDF downloaded for {user_id}")
             else:
                 await update.message.reply_text("❌ No PDF data in response")
         else:
@@ -622,7 +554,6 @@ async def get_otp2(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             
     except Exception as e:
         await progress.delete()
-        logger.exception(f"GET_OTP2: Error for {user_id}: {e}")
         await update.message.reply_text(f"❌ Error: {str(e)}")
     
     if user_id in _SESSIONS:
@@ -646,8 +577,6 @@ async def error_handler(update: Optional[Update], context: ContextTypes.DEFAULT_
     logger.error(f"PTB Error: {context.error}")
     if update:
         logger.error(f"Update that caused error: {update}")
-    import traceback
-    traceback.print_exc()
 
 # ============================================================
 # BOT INITIALIZATION
@@ -690,7 +619,7 @@ def init_bot():
 
 def start_bot_application():
     """Start the PTB Application on the persistent event loop."""
-    global _bot_running
+    global _bot_running, _bot_ready
     
     if BOT_APP is None:
         logger.error("❌ Cannot start: BOT_APP is None")
@@ -702,17 +631,29 @@ def start_bot_application():
         
         # Define async startup coroutine
         async def startup():
-            await BOT_APP.initialize()
-            await BOT_APP.start()
-            logger.info("✅ PTB Application started")
-            return True
+            try:
+                await BOT_APP.initialize()
+                await BOT_APP.start()
+                logger.info("✅ PTB Application started with update queue processor")
+                
+                # Verify the update queue is working
+                logger.info(f"✅ Update queue size: {BOT_APP.update_queue.qsize()}")
+                logger.info(f"✅ Application is running: {BOT_APP.running}")
+                logger.info(f"✅ Bot ID: {BOT_APP.bot.id if BOT_APP.bot else 'None'}")
+                
+                _bot_ready.set()
+                return True
+            except Exception as e:
+                logger.exception(f"❌ Startup error: {e}")
+                return False
         
         # Run startup on the persistent loop
-        result = run_async(startup())
+        result = run_on_loop(startup())
         
         if result:
             _bot_running = True
             logger.info("✅ Bot application is running on persistent event loop")
+            logger.info("✅ Update queue processor is active")
             return True
         else:
             logger.error("❌ Bot application failed to start")
@@ -733,6 +674,11 @@ def configure_webhook():
         return False
     
     try:
+        # Wait for bot to be ready
+        if not _bot_ready.wait(timeout=30):
+            logger.error("❌ Bot not ready after 30 seconds")
+            return False
+        
         # Get Render hostname
         render_host = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
         if render_host:
@@ -764,7 +710,7 @@ def configure_webhook():
             return True
         
         # Run on persistent loop
-        result = run_async(setup_webhook())
+        result = run_on_loop(setup_webhook())
         
         if result:
             logger.info("✅ Webhook configured successfully")
@@ -794,12 +740,17 @@ def health():
         "bot_initialized": BOT_APP is not None,
         "bot_running": _bot_running,
         "event_loop_running": _event_loop is not None and _event_loop.is_running(),
-        "webhook_configured": _bot_running
+        "webhook_configured": _bot_running,
+        "bot_ready": _bot_ready.is_set(),
+        "update_queue_size": BOT_APP.update_queue.qsize() if BOT_APP and hasattr(BOT_APP, 'update_queue') else 0
     }, 200
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Handle Telegram updates via webhook - returns immediately."""
+    """
+    Handle Telegram updates via webhook.
+    Enqueues the update into PTB's internal update_queue and returns immediately.
+    """
     if not BOT_APP:
         logger.error("❌ BOT_APP is None")
         return "Bot not initialized", 500
@@ -808,29 +759,38 @@ def webhook():
         logger.error("❌ Bot application not running")
         return "Bot not running", 500
     
+    if not _bot_ready.is_set():
+        logger.error("❌ Bot not ready yet")
+        return "Bot not ready", 500
+    
     try:
         json_data = request.get_json(force=True)
         update = Update.de_json(json_data, BOT_APP.bot)
         
-        logger.info(f"📩 Webhook received update_id: {update.update_id if update else 'None'}")
+        if not update:
+            logger.error("❌ Failed to parse update")
+            return "Invalid update", 400
         
-        # Submit update to persistent event loop WITHOUT waiting
-        future = asyncio.run_coroutine_threadsafe(
-            BOT_APP.process_update(update),
-            _event_loop
-        )
+        # Define async coroutine to put update in queue
+        async def enqueue_update():
+            try:
+                await BOT_APP.update_queue.put(update)
+            except Exception as e:
+                logger.exception(f"❌ Failed to enqueue update: {e}")
+                raise
         
-        # Add callback to log exceptions without blocking
+        # Submit enqueue operation to persistent event loop
+        future = submit_to_loop(enqueue_update())
+        
+        # Add callback to log any background exceptions
         def handle_future_result(fut):
             try:
-                # This will raise the exception if any occurred
                 fut.result()
             except Exception as e:
-                logger.exception(f"❌ Background update processing error: {e}")
+                logger.exception(f"❌ Background enqueue error: {e}")
         
         future.add_done_callback(handle_future_result)
         
-        logger.info(f"✅ Update submitted to event loop, returning 200")
         return "OK", 200
         
     except Exception as e:
@@ -849,7 +809,7 @@ if init_bot():
     if start_bot_application():
         # Configure webhook
         if configure_webhook():
-            print("✅ Bot is fully ready to receive updates!")
+            print("✅ Bot is fully ready to receive updates via update_queue!")
         else:
             print("⚠️ Webhook configuration failed")
     else:
