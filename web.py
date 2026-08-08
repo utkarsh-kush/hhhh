@@ -574,7 +574,11 @@ def home():
 
 @app.route('/health')
 def health():
-    return "OK", 200
+    return {
+        "flask": "ok",
+        "bot_initialized": BOT_APP is not None,
+        "token_loaded": BOT_TOKEN is not None
+    }, 200
 
 @app.route('/webhook', methods=['POST'])
 async def webhook():
