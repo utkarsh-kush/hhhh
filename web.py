@@ -82,42 +82,6 @@ _SIG_FRAG = "OKxgLvdvNjZ"
 _RETRY_CTR = "shnifz/vMiG"
 
 # ============================================================
-# PERSISTENT EVENT LOOP
-# ============================================================
-_event_loop = None
-_event_loop_thread = None
-_bot_running = False
-_bot_ready = threading.Event()
-
-def start_event_loop():
-    """Start a dedicated thread with a persistent asyncio event loop."""
-    global _event_loop, _event_loop_thread
-    
-    _event_loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(_event_loop)
-    
-    def run_loop():
-        asyncio.set_event_loop(_event_loop)
-        _event_loop.run_forever()
-    
-    _event_loop_thread = threading.Thread(target=run_loop, daemon=True)
-    _event_loop_thread.start()
-    logger.info("✅ Persistent event loop thread started")
-
-def run_on_loop(coro):
-    """Submit a coroutine to the persistent event loop and wait for result."""
-    if _event_loop is None:
-        raise RuntimeError("Event loop not started")
-    future = asyncio.run_coroutine_threadsafe(coro, _event_loop)
-    return future.result(timeout=30)
-
-def submit_to_loop(coro):
-    """Submit a coroutine to the persistent event loop and return future."""
-    if _event_loop is None:
-        raise RuntimeError("Event loop not started")
-    return asyncio.run_coroutine_threadsafe(coro, _event_loop)
-
-# ============================================================
 # UTILITY FUNCTIONS
 # ============================================================
 
@@ -226,6 +190,10 @@ from telegram.ext import Application, CommandHandler, MessageHandler, Conversati
 
 BOT_TOKEN = None
 BOT_APP = None
+_app_loop = None
+_app_thread = None
+_bot_ready = threading.Event()
+_bot_running = False
 
 class UserSession:
     def __init__(self):
@@ -268,6 +236,7 @@ def load_token():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
+    logger.info(f"START HANDLER: User {user_id}")
     
     if user_id in _SESSIONS:
         del _SESSIONS[user_id]
@@ -279,10 +248,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         "_Type Mr to skip_",
         parse_mode="Markdown"
     )
+    logger.info(f"START HANDLER: Sent name prompt to {user_id}")
     return NAME
 
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
+    logger.info(f"GET_NAME: User {user_id}")
     us = _SESSIONS.get(user_id)
     if not us:
         await update.message.reply_text("Session expired. /start again.")
@@ -295,10 +266,12 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         f"✅ Name: {us.name}\n\n"
         "📱 Enter your 10-digit Mobile Number"
     )
+    logger.info(f"GET_NAME: Name saved, sent mobile prompt to {user_id}")
     return MOBILE
 
 async def get_mobile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
+    logger.info(f"GET_MOBILE: User {user_id}")
     us = _SESSIONS.get(user_id)
     if not us:
         await update.message.reply_text("Session expired. /start again.")
@@ -326,10 +299,12 @@ async def get_mobile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         photo=io.BytesIO(img_bytes),
         caption="📸 Enter the captcha text"
     )
+    logger.info(f"GET_MOBILE: Captcha sent to {user_id}")
     return CAP1
 
 async def get_captcha1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
+    logger.info(f"GET_CAPTCHA1: User {user_id}")
     us = _SESSIONS.get(user_id)
     if not us:
         await update.message.reply_text("Session expired. /start again.")
@@ -370,6 +345,7 @@ async def get_captcha1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             f"✅ OTP Sent to {masked}\n\n"
             "📝 Enter the 6-digit OTP"
         )
+        logger.info(f"GET_CAPTCHA1: OTP sent to {user_id}")
         return OTP1
     else:
         msg = result.get("responseData", {}).get("message", "Failed to send OTP")
@@ -379,6 +355,7 @@ async def get_captcha1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def get_otp1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
+    logger.info(f"GET_OTP1: User {user_id}")
     us = _SESSIONS.get(user_id)
     if not us:
         await update.message.reply_text("Session expired. /start again.")
@@ -436,6 +413,7 @@ async def get_otp1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             photo=io.BytesIO(img_bytes),
             caption="📸 Enter the download captcha"
         )
+        logger.info(f"GET_OTP1: Download captcha sent to {user_id}")
         return CAP2
     else:
         msg = result.get("responseData", {}).get("message", "Invalid OTP")
@@ -444,6 +422,7 @@ async def get_otp1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def get_captcha2(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
+    logger.info(f"GET_CAPTCHA2: User {user_id}")
     us = _SESSIONS.get(user_id)
     if not us:
         await update.message.reply_text("Session expired. /start again.")
@@ -476,10 +455,12 @@ async def get_captcha2(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         "✅ Download OTP Sent!\n\n"
         "📝 Enter the Download OTP"
     )
+    logger.info(f"GET_CAPTCHA2: Download OTP sent to {user_id}")
     return OTP2
 
 async def get_otp2(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
+    logger.info(f"GET_OTP2: User {user_id}")
     us = _SESSIONS.get(user_id)
     if not us:
         await update.message.reply_text("Session expired. /start again.")
@@ -546,6 +527,7 @@ async def get_otp2(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                     f"✅ Download Complete!\n\n"
                     f"{_credit}"
                 )
+                logger.info(f"GET_OTP2: PDF downloaded for {user_id}")
             else:
                 await update.message.reply_text("❌ No PDF data in response")
         else:
@@ -554,6 +536,7 @@ async def get_otp2(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             
     except Exception as e:
         await progress.delete()
+        logger.exception(f"GET_OTP2: Error for {user_id}: {e}")
         await update.message.reply_text(f"❌ Error: {str(e)}")
     
     if user_id in _SESSIONS:
@@ -573,7 +556,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # ============================================================
 
 async def error_handler(update: Optional[Update], context: ContextTypes.DEFAULT_TYPE):
-    """Log errors from PTB."""
     logger.error(f"PTB Error: {context.error}")
     if update:
         logger.error(f"Update that caused error: {update}")
@@ -590,7 +572,6 @@ def init_bot():
         print("❌ Invalid BOT_TOKEN!")
         return False
     
-    # Build application with job queue support
     BOT_APP = Application.builder().token(BOT_TOKEN).build()
     
     conv = ConversationHandler(
@@ -614,114 +595,65 @@ def init_bot():
     return True
 
 # ============================================================
-# START BOT APPLICATION ON PERSISTENT EVENT LOOP
+# PTB APPLICATION RUNNER IN BACKGROUND THREAD
 # ============================================================
 
-def start_bot_application():
-    """Start the PTB Application on the persistent event loop."""
-    global _bot_running, _bot_ready
-    
-    if BOT_APP is None:
-        logger.error("❌ Cannot start: BOT_APP is None")
-        return False
+def run_application_with_webhook():
+    """Run PTB Application with webhook in a background thread using PTB's own event loop."""
+    global _bot_running, _bot_ready, _app_loop
     
     try:
-        # Start the event loop thread first
-        start_event_loop()
-        
-        # Define async startup coroutine
-        async def startup():
-            try:
-                await BOT_APP.initialize()
-                await BOT_APP.start()
-                logger.info("✅ PTB Application started with update queue processor")
-                
-                # Verify the update queue is working
-                logger.info(f"✅ Update queue size: {BOT_APP.update_queue.qsize()}")
-                logger.info(f"✅ Application is running: {BOT_APP.running}")
-                logger.info(f"✅ Bot ID: {BOT_APP.bot.id if BOT_APP.bot else 'None'}")
-                
-                _bot_ready.set()
-                return True
-            except Exception as e:
-                logger.exception(f"❌ Startup error: {e}")
-                return False
-        
-        # Run startup on the persistent loop
-        result = run_on_loop(startup())
-        
-        if result:
-            _bot_running = True
-            logger.info("✅ Bot application is running on persistent event loop")
-            logger.info("✅ Update queue processor is active")
-            return True
-        else:
-            logger.error("❌ Bot application failed to start")
-            return False
-            
-    except Exception as e:
-        logger.exception(f"❌ Failed to start bot application: {e}")
-        return False
-
-# ============================================================
-# CONFIGURE WEBHOOK ON PERSISTENT EVENT LOOP
-# ============================================================
-
-def configure_webhook():
-    """Configure webhook on the persistent event loop."""
-    if BOT_APP is None:
-        logger.error("❌ Cannot configure webhook: BOT_APP is None")
-        return False
-    
-    try:
-        # Wait for bot to be ready
-        if not _bot_ready.wait(timeout=30):
-            logger.error("❌ Bot not ready after 30 seconds")
-            return False
-        
-        # Get Render hostname
+        # Get webhook URL
         render_host = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
         if render_host:
             webhook_url = f"https://{render_host}/webhook"
         else:
             webhook_url = os.environ.get('WEBHOOK_URL')
             if not webhook_url:
-                logger.error("⚠️ No WEBHOOK_URL found!")
-                return False
+                logger.error("❌ No webhook URL available")
+                return
         
-        logger.info(f"📡 Configuring webhook to: {webhook_url}")
+        logger.info(f"📡 Running PTB Application with webhook: {webhook_url}")
         
-        # Define async webhook config
+        # Create and set the event loop for this thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        _app_loop = loop
+        
+        # Run the application using PTB's built-in webhook runner
+        # This keeps the loop running and processes updates from the webhook
+        loop.run_until_complete(BOT_APP.initialize())
+        loop.run_until_complete(BOT_APP.start())
+        
+        # Set webhook
         async def setup_webhook():
-            # Delete existing webhook
             await BOT_APP.bot.delete_webhook()
-            await asyncio.sleep(1)
-            
-            # Set new webhook
+            await asyncio.sleep(0.5)
             await BOT_APP.bot.set_webhook(
                 webhook_url,
                 drop_pending_updates=True,
                 allowed_updates=["message", "callback_query"]
             )
-            
-            # Verify
             info = await BOT_APP.bot.get_webhook_info()
-            logger.info(f"✅ Webhook info: {info.url}")
+            logger.info(f"✅ Webhook configured: {info.url}")
             return True
         
-        # Run on persistent loop
-        result = run_on_loop(setup_webhook())
+        result = loop.run_until_complete(setup_webhook())
         
         if result:
-            logger.info("✅ Webhook configured successfully")
-            return True
+            _bot_running = True
+            _bot_ready.set()
+            logger.info("✅ PTB Application is running with webhook support")
+            logger.info("✅ Update processor is active and waiting for updates")
+            
+            # Keep the loop running forever
+            loop.run_forever()
         else:
-            logger.error("❌ Webhook configuration failed")
-            return False
+            logger.error("❌ Webhook setup failed")
             
     except Exception as e:
-        logger.exception(f"❌ Webhook configuration error: {e}")
-        return False
+        logger.exception(f"❌ Application runner error: {e}")
+        _bot_ready.set()  # Unblock health check even on error
 
 # ============================================================
 # FLASK ROUTES
@@ -733,13 +665,12 @@ def home():
 
 @app.route('/health')
 def health():
-    """Health check endpoint with diagnostic info."""
     return {
         "flask": "ok",
         "env_token_exists": bool(os.environ.get("BOT_TOKEN")),
         "bot_initialized": BOT_APP is not None,
         "bot_running": _bot_running,
-        "event_loop_running": _event_loop is not None and _event_loop.is_running(),
+        "event_loop_running": _app_loop is not None and _app_loop.is_running(),
         "webhook_configured": _bot_running,
         "bot_ready": _bot_ready.is_set(),
         "update_queue_size": BOT_APP.update_queue.qsize() if BOT_APP and hasattr(BOT_APP, 'update_queue') else 0
@@ -749,7 +680,7 @@ def health():
 def webhook():
     """
     Handle Telegram updates via webhook.
-    Enqueues the update into PTB's internal update_queue and returns immediately.
+    PTB's built-in webhook handler processes updates via its internal queue.
     """
     if not BOT_APP:
         logger.error("❌ BOT_APP is None")
@@ -759,10 +690,6 @@ def webhook():
         logger.error("❌ Bot application not running")
         return "Bot not running", 500
     
-    if not _bot_ready.is_set():
-        logger.error("❌ Bot not ready yet")
-        return "Bot not ready", 500
-    
     try:
         json_data = request.get_json(force=True)
         update = Update.de_json(json_data, BOT_APP.bot)
@@ -771,27 +698,27 @@ def webhook():
             logger.error("❌ Failed to parse update")
             return "Invalid update", 400
         
-        # Define async coroutine to put update in queue
-        async def enqueue_update():
-            try:
-                await BOT_APP.update_queue.put(update)
-            except Exception as e:
-                logger.exception(f"❌ Failed to enqueue update: {e}")
-                raise
-        
-        # Submit enqueue operation to persistent event loop
-        future = submit_to_loop(enqueue_update())
-        
-        # Add callback to log any background exceptions
-        def handle_future_result(fut):
-            try:
-                fut.result()
-            except Exception as e:
-                logger.exception(f"❌ Background enqueue error: {e}")
-        
-        future.add_done_callback(handle_future_result)
-        
-        return "OK", 200
+        # Submit to PTB's update queue on the application's loop
+        if _app_loop and _app_loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(
+                BOT_APP.update_queue.put(update),
+                _app_loop
+            )
+            
+            # Log any errors
+            def log_future_error(fut):
+                try:
+                    fut.result()
+                except Exception as e:
+                    logger.exception(f"❌ Queue put error: {e}")
+            
+            future.add_done_callback(log_future_error)
+            
+            logger.info(f"📩 Update queued: update_id={update.update_id}")
+            return "OK", 200
+        else:
+            logger.error("❌ Event loop not running")
+            return "Event loop not running", 500
         
     except Exception as e:
         logger.exception(f"❌ Webhook error: {e}")
@@ -803,17 +730,17 @@ def webhook():
 
 print("🚀 Initializing bot for production...")
 
-# Initialize bot
 if init_bot():
-    # Start bot application on persistent event loop
-    if start_bot_application():
-        # Configure webhook
-        if configure_webhook():
-            print("✅ Bot is fully ready to receive updates via update_queue!")
-        else:
-            print("⚠️ Webhook configuration failed")
+    # Start PTB Application in background thread
+    app_thread = threading.Thread(target=run_application_with_webhook, daemon=True)
+    app_thread.start()
+    _app_thread = app_thread
+    
+    # Wait for bot to be ready
+    if _bot_ready.wait(timeout=30):
+        print("✅ Bot is fully ready to receive updates!")
     else:
-        print("⚠️ Bot application failed to start")
+        print("⚠️ Bot may not be ready yet")
 else:
     print("⚠️ Bot initialization failed")
 
@@ -828,22 +755,19 @@ if __name__ == '__main__':
     print("   SkillX Aadhar PDF Tool - Development Mode")
     print("="*50)
     
-    # Initialize bot
     if not init_bot():
         print("❌ Bot initialization failed!")
         sys.exit(1)
     
-    # Start bot on event loop
-    if not start_bot_application():
-        print("❌ Bot application failed to start!")
-        sys.exit(1)
+    # Start in background
+    app_thread = threading.Thread(target=run_application_with_webhook, daemon=True)
+    app_thread.start()
     
-    # Configure webhook
-    if not configure_webhook():
-        print("⚠️ Webhook configuration failed")
+    if _bot_ready.wait(timeout=30):
+        print("✅ Bot is ready!")
+    else:
+        print("⚠️ Bot may not be ready yet")
     
-    # Run web server
     port = int(os.environ.get('PORT', 10000))
     print(f"🚀 Web server running on port {port}")
-    print("✅ Bot is ready!")
     app.run(host='0.0.0.0', port=port)
