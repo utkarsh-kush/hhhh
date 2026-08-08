@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: aadhar-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn web:app
+    envVars:
+      - key: BOT_TOKEN
+        value: your_token_here
