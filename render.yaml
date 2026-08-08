@@ -3,7 +3,7 @@ services:
     name: aadhar-bot
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn web:app --workers 1 --threads 4
+    startCommand: python web.py
     envVars:
       - key: BOT_TOKEN
         sync: false
