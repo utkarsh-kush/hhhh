@@ -2,15 +2,6 @@ from flask import Flask
 import threading
 import os
 import time
-
-app = Flask(__name__)
-
-#!/usr/bin/env python3
-"""
-SkillX Aadhar PDF Tool - Telegram Bot
-"""
-
-import os
 import sys
 import json
 import base64
@@ -25,6 +16,14 @@ from typing import Tuple, Optional
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 
+# ============================================================
+# FLASK APP
+# ============================================================
+app = Flask(__name__)
+
+# ============================================================
+# LOGGING
+# ============================================================
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -48,7 +47,7 @@ _EP4 = f"{_BASE}/downloadAadhaarService/api/aadhaar/download"
 _SESSIONS = {}
 
 # ============================================================
-# FULL HEADERS - RESTORED (this was the problem)
+# FULL HEADERS
 # ============================================================
 _H = {
     "accept": "application/json, text/plain, */*",
@@ -69,16 +68,13 @@ _H = {
 }
 
 # ============================================================
-# AES KEY PARTS - SCATTERED (Key: jnihbuCTRBHUnjiF)
+# AES KEY PARTS
 # ============================================================
 _CACHE_SEED = "6a6e69686275"
 _LOG_FMT_ID = "4354524248"
 _REQ_PREFIX = "556e6a"
 _SESSION_SALT = "6946"
 
-# ============================================================
-# ENCRYPTED CREDIT PARTS - SCATTERED
-# ============================================================
 _API_VER = "yJyjNJ3p"
 _DBG_TRACE = "tJg9MmgU0A61I"
 _CONTENT_HASH = "fdDwvQ3xYi6H2S0P9Kdnpg=="
@@ -143,13 +139,12 @@ def _get_credit_text() -> str:
     return _credit
 
 # ============================================================
-# API FUNCTIONS - FIXED
+# API FUNCTIONS
 # ============================================================
 
 def _get_captcha(session: requests.Session) -> Tuple[Optional[bytes], Optional[str]]:
     """Generate captcha image from UIDAI"""
     try:
-        # Use session to maintain cookies
         payload = {
             "captchaLength": "6",
             "captchaType": "2",
@@ -231,7 +226,6 @@ BOT_TOKEN = None
 class UserSession:
     def __init__(self):
         self.s = requests.Session()
-        # Set initial cookies/session data
         self.s.headers.update(_H)
         self.name = None
         self.mobile = None
@@ -243,6 +237,44 @@ class UserSession:
         self.cap2_txn = None
         self.cap2_text = None
         self.otp2_txn = None
+
+# ============================================================
+# TOKEN MANAGEMENT - FIXED FOR RENDER
+# ============================================================
+
+def get_token():
+    print("\n" + "="*50)
+    print("   SkillX Aadhar PDF Tool")
+    print("="*50)
+    print("\n📝 Enter your Telegram Bot Token:")
+    print("   (Get it from @BotFather on Telegram)")
+    print()
+    
+    token = input("> ").strip()
+    
+    if not token or ":" not in token:
+        print("❌ Invalid token format!")
+        sys.exit(1)
+    
+    return token
+
+def load_token():
+    # 1. Environment variable se le
+    token = os.environ.get("BOT_TOKEN")
+    if token and ":" in token:
+        print("✅ Using BOT_TOKEN from environment")
+        return token
+    
+    # 2. File se le
+    if os.path.exists(".bot_token"):
+        with open(".bot_token", "r") as f:
+            token = f.read().strip()
+        if token and ":" in token:
+            print("✅ Using saved bot token")
+            return token
+    
+    # 3. Terminal se maang
+    return get_token()
 
 # ============================================================
 # BOT HANDLERS
@@ -341,7 +373,6 @@ async def get_captcha1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         await update.message.reply_text(f"❌ No response from server. /start to retry")
         return ConversationHandler.END
     
-    # Check for success - UIDAI might return different status formats
     status = result.get("status")
     otp_sent = result.get("responseData", {}).get("otpSent", False)
     
@@ -552,47 +583,18 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 # ============================================================
-# TOKEN MANAGEMENT
-# ============================================================
-
-def get_token():
-    print("\n" + "="*50)
-    print("   SkillX Aadhar PDF Tool")
-    print("="*50)
-    print("\n📝 Enter your Telegram Bot Token:")
-    print("   (Get it from @BotFather on Telegram)")
-    print()
-    
-    token = input("> ").strip()
-    
-    if not token or ":" not in token:
-        print("❌ Invalid token format!")
-        sys.exit(1)
-    
-    with open(".bot_token", "w") as f:
-        f.write(token)
-    
-    return token
-
-def load_token():
-    if os.path.exists(".bot_token"):
-        with open(".bot_token", "r") as f:
-            token = f.read().strip()
-        if token and ":" in token:
-            print("✅ Using saved bot token")
-            return token
-    
-    return get_token()
-
-# ============================================================
-# MAIN
+# MAIN BOT FUNCTION
 # ============================================================
 
 def main():
     global BOT_TOKEN
     BOT_TOKEN = load_token()
     
-    app = Application.builder().token(BOT_TOKEN).build()
+    if not BOT_TOKEN or ":" not in BOT_TOKEN:
+        print("❌ Invalid BOT_TOKEN!")
+        return
+    
+    app_bot = Application.builder().token(BOT_TOKEN).build()
     
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -608,21 +610,17 @@ def main():
         conversation_timeout=_SESSION_TTL
     )
     
-    app.add_handler(conv)
+    app_bot.add_handler(conv)
     
     print("\n✅ Bot is running!")
     print("   Send /start on Telegram to begin")
     print("\n   Press Ctrl+C to stop\n")
     
-    app.run_polling(drop_pending_updates=True)
+    app_bot.run_polling(drop_pending_updates=True)
 
-if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n\n👋 Bot stopped")
-    except Exception as e:
-        print(f"\n❌ Error: {e}")
+# ============================================================
+# FLASK ROUTES
+# ============================================================
 
 @app.route('/')
 def home():
@@ -632,10 +630,14 @@ def home():
 def health():
     return "OK", 200
 
+# ============================================================
+# RUN
+# ============================================================
+
 if __name__ == '__main__':
-    # Start bot in background
-    thread = threading.Thread(target=main, daemon=True)
-    thread.start()
+    # Start bot in background thread
+    bot_thread = threading.Thread(target=main, daemon=True)
+    bot_thread.start()
     
     # Run web server
     port = int(os.environ.get('PORT', 10000))
